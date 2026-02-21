@@ -1,17 +1,17 @@
-# タイトル
-subtitle: サブタイトル
+# Title
+subtitle: Subtitle
 
----
+## Chapter 1
+Content
 
-## 1章
+### Page 1-1
+* List 1
+* List 2
+  * List 2-1
+    * List 2-1-1
 
-内容
-
----
-
-### ページ1-1
-
-* リスト1
-* リスト2
-  * リスト2-1
-    * リスト2-2
+### Page 1-2
+Up to 1 nesting level.
+1. List 1
+2. List 2
+3. List 2
