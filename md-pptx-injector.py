@@ -12,7 +12,6 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 from pptx import Presentation
 from pptx.enum.shapes import PP_PLACEHOLDER
 from pptx.oxml.ns import qn
@@ -24,6 +23,8 @@ try:
     from PIL import Image as PILImage
 except ImportError:
     PILImage = None
+
+__version__ = "0.9.0.0"
 
 # -------------------------
 # Constants
@@ -40,9 +41,11 @@ CODE_BLOCK_HEIGHT = Inches(4.0)
 logger = logging.getLogger(__name__)
 
 def setup_logging(verbose: bool) -> None:
-    """Configure log level."""
-    level = logging.INFO if verbose else logging.WARNING
-    logging.basicConfig(level=level, format='%(levelname)s: %(message)s', stream=sys.stdout)
+    """Configure log level. -v enables DEBUG so all diagnostic output is visible.
+    force=True ensures any existing handlers (e.g. added by python-pptx) are replaced.
+    """
+    level = logging.DEBUG if verbose else logging.WARNING
+    logging.basicConfig(level=level, format='%(message)s', stream=sys.stdout, force=True)
 
 def get_app_dir() -> Path:
     """Get application directory (supports frozen exe)."""
@@ -61,11 +64,12 @@ def resolve_path(base_dir: Path, p: str, prefer_cwd: bool = True) -> Path:
     return (base_dir / pp).resolve()
 
 # -------------------------
-# Regex patterns (☆★★ / ★★☆)
+# Regex patterns
+# FIX #2: RE_LAYOUT and RE_PLACEHOLDER both use --\s*> to tolerate optional space before >
 # -------------------------
-RE_LAYOUT = re.compile(r'<!--\s*layout\s*=\s*"([^"]+)"\s*-->')
-RE_NEW_PAGE = re.compile(r'<!--\s*new_page(?:\s*=\s*"([^"]+)")?\s*-->')
-RE_PLACEHOLDER = re.compile(r'<!--\s*placeholder\s*=\s*"([^"]+)"\s*-->')
+RE_LAYOUT = re.compile(r'<!--\s*layout\s*=\s*"([^"]+)"\s*--\s*>')
+RE_NEW_PAGE = re.compile(r'<!--\s*new_page(?:\s*=\s*"([^"]+)")?\s*--\s*>')
+RE_PLACEHOLDER = re.compile(r'<!--\s*placeholder\s*=\s*"([^"]+)"\s*--\s*>')
 RE_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
 RE_KV = re.compile(r"^\s*(title|subtitle|author|toc|indent)\s*:\s*(.*)\s*$", re.IGNORECASE)
 RE_BULLET = re.compile(r"^(\s*)([-*+])\s+(.*)$")
@@ -137,12 +141,9 @@ def bring_to_front(shape) -> None:
         logger.debug(f"bring_to_front failed: {e}")
 
 def set_ea_font(run, typeface: str = "MS Gothic") -> None:
-    """Set East Asian font using DrawingML a:ea element.
-    Fix: avoid w:eastAsia (WordML namespace) which is invalid in PPTX.
-    """
+    """Set East Asian font using DrawingML a:ea element."""
     try:
         rPr = run._r.get_or_add_rPr()
-        # Remove existing a:ea to avoid duplicates
         for el in rPr.findall(qn("a:ea")):
             rPr.remove(el)
         ea = OxmlElement("a:ea")
@@ -152,11 +153,7 @@ def set_ea_font(run, typeface: str = "MS Gothic") -> None:
         logger.debug(f"set_ea_font failed: {e}")
 
 def add_slide_hyperlink(run, source_slide, target_slide) -> None:
-    """Add a slide-to-slide hyperlink via hlinkClick XML element.
-    Fix: run.hyperlink.action / PP_ACTION API does not support inter-slide
-    links. Must use relate_to() to register a relationship and set r:id on
-    a:hlinkClick directly. source_slide is needed to register the relationship.
-    """
+    """Add a slide-to-slide hyperlink via hlinkClick XML element."""
     try:
         rel_type = (
             "http://schemas.openxmlformats.org/officeDocument/2006/"
@@ -164,7 +161,6 @@ def add_slide_hyperlink(run, source_slide, target_slide) -> None:
         )
         rId = source_slide.part.relate_to(target_slide.part, rel_type)
         rPr = run._r.get_or_add_rPr()
-        # Remove existing hlinkClick to avoid duplicates
         for el in rPr.findall(qn("a:hlinkClick")):
             rPr.remove(el)
         hlink = OxmlElement("a:hlinkClick")
@@ -177,6 +173,10 @@ def add_slide_hyperlink(run, source_slide, target_slide) -> None:
 # PPTX shape finders
 # -------------------------
 def find_layout_by_name(prs: Presentation, layout_name: str):
+    """Find slide layout by name.
+    FIX #1: returns None instead of raising ValueError when layout is not found.
+    Callers are responsible for fallback handling.
+    """
     for master in prs.slide_masters:
         for layout in master.slide_layouts:
             if layout.name == layout_name:
@@ -239,13 +239,33 @@ def find_shape_by_name(slide, shape_name: str):
         logger.debug(f"find_shape_by_name layout lookup failed: {e}")
     return None
 
+def dump_slide_shapes(slide, page_no: int) -> None:
+    """Debug: dump all shapes on a slide (visible with -v)."""
+    logger.debug(f"  [shapes on slide]")
+    for i, shp in enumerate(slide.shapes):
+        name = getattr(shp, "name", "")
+        has_tf = getattr(shp, "has_text_frame", False)
+        is_ph = getattr(shp, "is_placeholder", False)
+        ph_idx = ph_type = None
+        if is_ph:
+            try:
+                ph_idx = shp.placeholder_format.idx
+                ph_type = shp.placeholder_format.type
+            except (AttributeError, KeyError):
+                pass
+        st = getattr(shp, "shape_type", None)
+        logger.debug(
+            f"    - #{i}: name={name!r}, shape_type={st}, "
+            f"is_placeholder={is_ph}, ph_idx={ph_idx}, ph_type={ph_type}, "
+            f"has_text_frame={has_tf}"
+        )
+
 # -------------------------
 # Markdown parsing
 # -------------------------
 def parse_with_stack(text: str, verbose: bool, page_no: int) -> list[TextRun]:
-    """Stack-based inline HTML tag parser.
-    Detects mismatched/unclosed tags and falls back to plain text gracefully.
-    Adopted from Gemini Pro: superior to counter-based approach.
+    """Stack-based inline HTML tag parser (<b>, <i>, <u>).
+    Falls back to a single plain TextRun on mismatched or unclosed tags.
     """
     runs, pos, stack = [], 0, []
     for m in RE_HTML_TAGS.finditer(text):
@@ -309,7 +329,6 @@ def build_paragraphs_from_lines(
         content_lines.pop()
 
     safe_indent = indent if indent > 0 else DEFAULT_INDENT_SPACES
-    # Track heading level so bullet indents are relative to it
     base_level = 0
 
     for raw in content_lines:
@@ -343,7 +362,6 @@ def build_paragraphs_from_lines(
         if num_m or bul_m:
             match = num_m if num_m else bul_m
             idt = len(match.group(1).replace("\t", " " * safe_indent))
-            # Bullet level is relative to current heading level
             lv = min(base_level + (idt // safe_indent), MAX_BULLET_LEVEL)
             txt = (
                 f"{num_m.group(2)}. {num_m.group(3).strip()}"
@@ -360,41 +378,78 @@ def build_paragraphs_from_lines(
             runs=parse_with_stack(line.strip(), verbose, page_no),
         ))
 
-    # Flush unclosed code block
     if in_code and current_code:
         code_blocks.append("\n".join(current_code))
 
     return paras, code_blocks
 
 def split_pages(md_text: str) -> list[list[str]]:
+    """
+    Split markdown into pages:
+    - YAML front matter at document start: kept as part of first page
+    - <!-- new_page --> / <!-- new_page="layout" -->: unconditional page break
+    - <!-- layout="name" --> immediately followed by #/##/###: triggers page break
+    - #/##/### heading lines: trigger page break
+    """
     lines = md_text.splitlines()
-    pages, cur = [], []
+    pages: list[list[str]] = []
+    cur: list[str] = []
     in_yaml = False
+    i = 0
 
-    for line in lines:
+    def flush(new_cur: list[str] | None = None) -> None:
+        nonlocal cur
+        if any(l.strip() for l in cur):
+            pages.append(cur)
+        cur = new_cur if new_cur is not None else []
+
+    while i < len(lines):
+        line = lines[i]
         stripped = line.strip()
+
         if not any(l.strip() for l in cur) and stripped == "---" and not in_yaml:
             in_yaml = True
             cur.append(line)
+            i += 1
             continue
         if in_yaml:
             cur.append(line)
             if stripped == "---":
                 in_yaml = False
+            i += 1
             continue
 
-        is_manual = RE_NEW_PAGE.match(stripped)
-        heading_match = RE_HEADING.match(stripped)
-        is_h_break = heading_match and len(heading_match.group(1)) <= HEADING_LEVEL_PAGE_BREAK_THRESHOLD
+        if stripped == "---":
+            i += 1
+            continue
 
-        if is_manual or is_h_break:
-            if any(l.strip() for l in cur):
-                pages.append(cur)
-                cur = []
-            cur.append(line)
+        if RE_NEW_PAGE.match(stripped):
+            flush([line])
+            i += 1
+            continue
+
+        m_layout = RE_LAYOUT.search(stripped)
+        if m_layout:
+            next_stripped = lines[i + 1].strip() if i + 1 < len(lines) else ""
+            h_m = RE_HEADING.match(next_stripped)
+            if h_m and len(h_m.group(1)) <= HEADING_LEVEL_PAGE_BREAK_THRESHOLD:
+                flush([line, lines[i + 1]])
+                i += 2
+            else:
+                logger.warning(
+                    f"layout tag ignored (next line is not a heading): {stripped!r}"
+                )
+                i += 1
+            continue
+
+        h_m = RE_HEADING.match(stripped)
+        if h_m and len(h_m.group(1)) <= HEADING_LEVEL_PAGE_BREAK_THRESHOLD:
+            flush([line])
+            i += 1
             continue
 
         cur.append(line)
+        i += 1
 
     if cur:
         pages.append(cur)
@@ -467,37 +522,74 @@ def parse_markdown_table(lines: list[str]):
     ]
     return h, r
 
+def _write_run(paragraph, run_spec: TextRun) -> None:
+    """FIX #3: write a single TextRun into a paragraph at the run level.
+    Using run.font rather than paragraph.font avoids overriding template
+    paragraph-level styles (size, color, etc.) while still applying bold/italic/underline.
+    """
+    r = paragraph.add_run()
+    r.text = run_spec.text
+    try:
+        if run_spec.bold:
+            r.font.bold = True
+        if run_spec.italic:
+            r.font.italic = True
+        if run_spec.underline:
+            r.font.underline = True
+    except Exception as e:
+        logger.debug(f"Font style apply failed: {e}")
+
 def write_paragraphs_to_shape(
     shape, paras: list[ParaSpec], append: bool, blank_before_append: bool
 ) -> None:
+    """Write paragraphs to a text shape.
+
+    FIX #3: all text is written exclusively via _write_run() (run-level font
+    control).  p.text = ... is never used here, which avoids accidentally
+    overriding template paragraph styles (font size, color, etc.).
+
+    FIX #5: when append=True, tf.clear() is NOT called so existing content
+    (including template placeholder text) is preserved and new content is
+    appended after it.
+    """
     if not shape or not getattr(shape, "has_text_frame", False):
         return
     tf = shape.text_frame
+
+    # FIX #5: only clear the frame when starting fresh (not appending)
     if not append:
         tf.clear()
+
     if not paras:
         return
+
+    # Insert a blank separator paragraph before appended content
     if append and blank_before_append:
-        p = tf.add_paragraph()
-        p.text = ""
-        set_bullet_none(p)
-        p.level = 0
+        sep = tf.add_paragraph()
+        sep.add_run().text = ""
+        set_bullet_none(sep)
+        sep.level = 0
 
     for idx, ps in enumerate(paras):
-        p = tf.paragraphs[0] if (not append and idx == 0) else tf.add_paragraph()
-        p.text = ""
-        for run_spec in ps.runs:
-            r = p.add_run()
-            r.text = run_spec.text
-            try:
-                if run_spec.bold:
-                    r.font.bold = True
-                if run_spec.italic:
-                    r.font.italic = True
-                if run_spec.underline:
-                    r.font.underline = True
-            except Exception as e:
-                logger.debug(f"Font style apply failed: {e}")
+        # Re-use the first (already-cleared) paragraph only when not appending
+        if not append and idx == 0:
+            p = tf.paragraphs[0]
+            # Remove any residual <a:r> run elements left after tf.clear()
+            for child in list(p._p):
+                local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+                if local == "r":
+                    p._p.remove(child)
+        else:
+            p = tf.add_paragraph()
+
+        # FIX #3: always write via runs (never p.text = ...)
+        if ps.runs:
+            for run_spec in ps.runs:
+                _write_run(p, run_spec)
+        else:
+            # Blank / empty paragraph — add an empty run to keep the element valid
+            p.add_run().text = ""
+
         if ps.bullet:
             clear_bullet_override(p)
         else:
@@ -551,11 +643,16 @@ def insert_table_at_shape(slide, shp, lines: list[str]) -> None:
                 ts.table.cell(ri, ci).text = v
     bring_to_front(ts)
 
-def insert_image_at_shape(slide, shp, blk: list[str], md_dir: Path, ad: Path) -> None:
+def insert_image_at_shape(
+    slide, shp, blk: list[str], md_dir: Path, ad: Path,
+    placeholder_name: str = ""
+) -> None:
+    """Insert image with contain-fit."""
     line = blk[0].strip() if blk else ""
     m = RE_IMAGE.search(line)
     if not m or not PILImage:
         return
+    alt = (m.group(1) or "").strip()
     rel = m.group(2)
     target = None
     for b in [md_dir, ad, Path.cwd()]:
@@ -564,6 +661,7 @@ def insert_image_at_shape(slide, shp, blk: list[str], md_dir: Path, ad: Path) ->
             target = p
             break
     if not target:
+        logger.debug(f"Image not found: {rel}")
         return
     try:
         with PILImage.open(target) as im:
@@ -580,12 +678,25 @@ def insert_image_at_shape(slide, shp, blk: list[str], md_dir: Path, ad: Path) ->
             shp.top + (shp.height - nh) // 2,
             width=nw, height=nh,
         )
+        logger.debug(f"  [image] inserted '{target}' alt={alt!r}")
+        if alt and placeholder_name:
+            cap_name = f"{placeholder_name}_caption"
+            cap_shp = find_shape_by_name(slide, cap_name)
+            if cap_shp is not None and getattr(cap_shp, "has_text_frame", False):
+                set_text_lines(cap_shp, [alt])
+                logger.debug(f"  [caption] '{cap_name}' <- {alt!r}")
+            else:
+                logger.debug(f"  [caption] '{cap_name}' not found, skipping")
     except Exception as e:
         logger.debug(f"Failed to insert image '{target}': {e}")
 
 def resolve_layout_strategy(
     page_lines: list[str], front: dict, prs: Presentation, page_no: int
 ) -> str:
+    """Determine layout name for a page.
+    FIX #1: uses find_layout_by_name (returns None) rather than raising;
+    falls back to auto-detection when a named layout cannot be found.
+    """
     forced_layout = None
     for line in page_lines:
         m = RE_NEW_PAGE.match(line.strip())
@@ -610,7 +721,8 @@ def resolve_layout_strategy(
             break
 
     if forced_layout:
-        if find_layout_by_name(prs, forced_layout):
+        # FIX #1: graceful fallback — warn and continue with auto-detection
+        if find_layout_by_name(prs, forced_layout) is not None:
             return forced_layout
         logger.warning(
             f"Slide {page_no}: layout '{forced_layout}' not found. Falling back to auto."
@@ -636,12 +748,29 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
         state["indent"] = int(front.get("indent", DEFAULT_INDENT_SPACES))
 
     layout_name = resolve_layout_strategy(body, front, prs, page_no)
-    layout = (
-        find_layout_by_name(prs, layout_name)
-        or find_layout_by_name(prs, "Title and Content")
-    )
+
+    # FIX #1: multi-level fallback — never crash due to missing layout
+    layout = find_layout_by_name(prs, layout_name)
+    if layout is None:
+        logger.warning(
+            f"Slide {page_no}: layout '{layout_name}' not found, "
+            f"trying 'Title and Content'."
+        )
+        layout = find_layout_by_name(prs, "Title and Content")
+    if layout is None:
+        # Last resort: first available layout in the template
+        layout = prs.slide_masters[0].slide_layouts[0]
+        logger.warning(
+            f"Slide {page_no}: 'Title and Content' not found either. "
+            f"Using first available layout."
+        )
+
     slide = prs.slides.add_slide(layout)
     title_shp = find_title_shape(slide)
+
+    logger.debug(f"[page {page_no}] layout={layout_name!r}, front={bool(front)}")
+    logger.debug(f"[page {page_no}] created slide: slide_layout.name={slide.slide_layout.name!r}")
+    dump_slide_shapes(slide, page_no)
 
     body_clean = [
         ln for ln in body
@@ -659,6 +788,8 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
                     text=heading_text, level=heading_level, target_slide=slide
                 ))
             break
+
+    logger.debug(f"[page {page_no}] heading=({heading_level}) {heading_text!r}")
 
     blocks, rescue, idx = {}, [], 0
     while idx < len(body_clean):
@@ -687,6 +818,8 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
         rescue.append(body_clean[idx])
         idx += 1
 
+    logger.debug(f"[page {page_no}] placeholder blocks: { {k: len(v) for k, v in blocks.items()} }")
+
     indent = state["indent"]
     verbose = state["verbose"]
 
@@ -713,25 +846,34 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
         for name, blks in blocks.items():
             shp = find_shape_by_name(slide, name)
             if not shp:
-                logger.info(f"Slide {page_no}: '{name}' not found. Rescuing content.")
+                logger.debug(f'[page {page_no}] placeholder "{name}" NOT FOUND -> rescuing content')
                 for b in blks:
                     rescue.extend(b)
                 continue
             explicit_used.add(id(shp))
-            for blk in blks:
+            logger.debug(
+                f'[page {page_no}] placeholder "{name}" found: '
+                f'actual_name={getattr(shp, "name", None)!r}, '
+                f'is_placeholder={getattr(shp, "is_placeholder", False)}, '
+                f'has_text_frame={getattr(shp, "has_text_frame", False)}'
+            )
+            for bi, blk in enumerate(blks):
                 if not blk:
                     continue
                 if RE_IMAGE.search(blk[0].strip()):
-                    insert_image_at_shape(slide, shp, blk, md_dir, app_dir)
+                    logger.debug(f'  [image] block #{bi+1} -> "{name}"')
+                    insert_image_at_shape(slide, shp, blk, md_dir, app_dir,
+                                          placeholder_name=name)
                 elif parse_markdown_table(blk):
+                    logger.debug(f'  [table] block #{bi+1} -> "{name}"')
                     insert_table_at_shape(slide, shp, blk)
                 elif getattr(shp, "has_text_frame", False):
                     paras, codes = build_paragraphs_from_lines(blk, indent, verbose, page_no)
+                    logger.debug(f'  [text] block #{bi+1} -> "{name}" paras={len(paras)}')
                     for c in codes:
                         add_code_block_shape(slide, c)
                     key = (id(slide), name)
                     already = state["text_written"].get(key, False)
-                    # blank_before_append only when truly appending (not on first write)
                     write_paragraphs_to_shape(shp, paras, append=already, blank_before_append=already)
                     state["text_written"][key] = True
 
@@ -740,25 +882,27 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
         if any(ln.strip() for ln in rescue):
             body_shp = find_body_text_shape_excluding(slide, explicit_used)
             if body_shp:
-                # Log at INFO only when placeholder blocks exist (true rescue).
-                # Without placeholder blocks, rescue is the normal content path.
-                if blocks:
-                    logger.info(f"Slide {page_no}: placing rescued content into body.")
-                else:
-                    logger.debug(f"Slide {page_no}: placing body content (no placeholder blocks).")
                 paras, codes = build_paragraphs_from_lines(rescue, indent, verbose, page_no)
+                if blocks:
+                    logger.debug(f"[page {page_no}] rescue -> body paras={len(paras)} (some content unmatched)")
+                else:
+                    logger.debug(f"[page {page_no}] rescue -> body paras={len(paras)} (no placeholder blocks)")
                 for c in codes:
                     add_code_block_shape(slide, c)
                 key = (id(slide), "__BODY__")
+                # FIX #5: rescue always appends — never overwrites existing shape content
                 already = state["text_written"].get(key, False)
-                write_paragraphs_to_shape(body_shp, paras, append=already, blank_before_append=already)
+                write_paragraphs_to_shape(body_shp, paras, append=True, blank_before_append=already)
                 state["text_written"][key] = True
+            else:
+                logger.debug(f"[page {page_no}] rescue skipped (no body shape found)")
 
 def generate_toc_slide(prs, toc_entries: list[TOCEntry]) -> None:
-    layout = (
-        find_layout_by_name(prs, "Table of Contents")
-        or find_layout_by_name(prs, "Title and Content")
-    )
+    layout = find_layout_by_name(prs, "Table of Contents")
+    if layout is None:
+        layout = find_layout_by_name(prs, "Title and Content")
+    if layout is None:
+        layout = prs.slide_masters[0].slide_layouts[0]
     slide = prs.slides.add_slide(layout)
     title_shp = find_title_shape(slide)
     if title_shp:
@@ -772,7 +916,6 @@ def generate_toc_slide(prs, toc_entries: list[TOCEntry]) -> None:
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
         p.text = entry.text
         p.level = entry.level - 2
-        # Pass source_slide (TOC slide) so relate_to() registers the relationship correctly
         for run in p.runs:
             add_slide_hyperlink(run, slide, entry.target_slide)
 
@@ -803,6 +946,7 @@ def main() -> int:
         "indent": DEFAULT_INDENT_SPACES,
     }
     pages = split_pages(src.read_text(encoding="utf-8"))
+    logger.debug(f"Processing {len(pages)} page(s)")
     for i, pg in enumerate(pages, 1):
         if any(l.strip() for l in pg):
             build_slide_from_page(prs, pg, src.parent, ad, state, i)

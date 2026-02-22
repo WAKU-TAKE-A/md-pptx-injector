@@ -1,501 +1,467 @@
 # md-pptx-injector.py
 
-Markdown to PowerPoint converter with template support, custom layouts, and advanced formatting.
+Markdownファイルをテンプレートベースで PowerPoint プレゼンテーション（.pptx）に変換するツールです。カスタムレイアウト・プレースホルダー・書式対応・目次自動生成などを備えています。
 
-## Table of Contents
-- [Quick Start](#quick-start)
-- [Features](#features)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Path Resolution](#path-resolution)
-- [Markdown Syntax](#markdown-syntax)
-- [Layouts and Placeholders](#layouts-and-placeholders)
-- [Advanced Features](#advanced-features)
-- [Troubleshooting](#troubleshooting)
+## 目次
+
+- [クイックスタート](#クイックスタート)
+- [機能一覧](#機能一覧)
+- [インストール](#インストール)
+- [使い方](#使い方)
+- [パス解決ルール](#パス解決ルール)
+- [Markdown 記法](#markdown-記法)
+- [レイアウトとプレースホルダー](#レイアウトとプレースホルダー)
+- [高度な機能](#高度な機能)
+- [トラブルシューティング](#トラブルシューティング)
 
 ---
 
-## Quick Start
+## クイックスタート
 
 ```bash
-# Install dependencies
+# 依存パッケージのインストール
 pip install python-pptx Pillow
 
-# Basic usage
+# 基本的な使い方
 python md-pptx-injector.py input.md output.pptx --template template.pptx
 
-# With verbose output for debugging
+# デバッグ用詳細ログあり
 python md-pptx-injector.py input.md output.pptx --template template.pptx -v
 ```
 
 ---
 
-## Features
+## 機能一覧
 
-### Core Functionality
-- ✅ Convert Markdown to PowerPoint presentations
-- ✅ Template-based slide generation
-- ✅ Custom layout support via HTML comments
-- ✅ Custom placeholder targeting for precise content placement
-- ✅ **Bold**, *Italic*, and ***Bold+Italic*** text formatting (inline and whole-line)
-- ✅ Bullet points with multi-level indentation (up to 3 levels)
-- ✅ Markdown tables → PowerPoint tables
-- ✅ Images with aspect ratio preservation and captions
-- ✅ YAML front matter for title slides
-- ✅ PyInstaller packaging support
-
-### Code Quality
-- ✅ Modern Python 3.9+ type hints
-- ✅ Comprehensive logging with adjustable verbosity
-- ✅ Robust error handling with detailed diagnostics
-- ✅ Type checking ready (mypy compatible)
-- ✅ Clean, modular code structure
+- Markdown → PowerPoint 変換（テンプレート使用）
+- HTMLコメントによるカスタムレイアウト指定
+- プレースホルダー名を指定したコンテンツ配置
+- `<!-- new_page -->` による明示的なページ区切り
+- `<b>`, `<i>`, `<u>` タグによるインライン書式（太字・斜体・下線）
+- 箇条書き（`-` `*` `+`）および番号付きリスト（最大3レベル）
+- コードブロック（``` ``` ``` 囲み → グレー背景テキストボックス）
+- Markdown テーブル → PowerPoint テーブル（列幅・アラインメント制御付き）
+- 画像挿入（アスペクト比保持のコンテインフィット、キャプション対応）
+- YAML front matter によるタイトルスライド生成
+- `toc: true` による目次スライド自動生成（スライド間ハイパーリンク付き）
+- PyInstaller（exe 化）対応
 
 ---
 
-## Installation
+## インストール
 
-### Requirements
-- Python 3.9 or later
-- Dependencies:
-  ```bash
-  pip install python-pptx Pillow
-  ```
+**必要環境**
 
----
+- Python 3.9 以降
 
-## Usage
-
-### Command Line
+**依存パッケージ**
 
 ```bash
-python md-pptx-injector.py <src_md> <dst_pptx> [OPTIONS]
+pip install python-pptx Pillow
 ```
 
-**Arguments:**
-- `src_md` - Source Markdown file
-- `dst_pptx` - Destination PowerPoint file
+> `Pillow` は画像挿入に使用します。不要な場合はインストールしなくても動作しますが、画像は無視されます。
 
-**Options:**
-- `--template PATH` - Template PPTX file (default: `template.pptx`)
-- `-v, --verbose` - Enable verbose logging for debugging
+---
 
-**Examples:**
+## 使い方
+
+### コマンドライン
+
 ```bash
-# Use default template.pptx
+python md-pptx-injector.py <src> <dst> [オプション]
+```
+
+| 引数・オプション | 説明 |
+|---|---|
+| `src` | 入力 Markdown ファイル |
+| `dst` | 出力 PowerPoint ファイル |
+| `--template PATH` | テンプレート .pptx ファイル（デフォルト: `template.pptx`） |
+| `-v, --verbose` | デバッグログを標準出力に表示 |
+
+**例**
+
+```bash
+# テンプレートをデフォルト（template.pptx）から使用
 python md-pptx-injector.py slides.md presentation.pptx
 
-# Specify custom template
+# テンプレートを明示指定
 python md-pptx-injector.py slides.md presentation.pptx --template custom.pptx
 
-# Debug mode with detailed logging
+# デバッグモード
 python md-pptx-injector.py slides.md presentation.pptx -v
 ```
 
 ---
 
-## Path Resolution
+## パス解決ルール
 
-### Application Base Directory
-The "app base directory" is determined by:
-- **Script execution**: Directory containing `md-pptx-injector.py`
-- **EXE execution**: Directory containing `md-pptx-injector.exe` (PyInstaller)
+### アプリケーション基準ディレクトリ
 
-### File Path Resolution (src_md, dst_pptx, --template)
+| 実行方法 | 基準ディレクトリ |
+|---|---|
+| スクリプト実行 | `.py` ファイルが置かれているディレクトリ |
+| exe 実行（PyInstaller） | `.exe` ファイルが置かれているディレクトリ |
 
-Paths are resolved in this order:
+### src・dst・--template のパス解決順序
 
-1. **Absolute paths**: Used as-is (highest priority)
-   ```bash
-   python md-pptx-injector.py /home/user/slides.md /tmp/out.pptx
-   ```
+1. **絶対パス** → そのまま使用
+2. **カレントディレクトリに存在するパス** → カレントディレクトリ基準で解決（優先）
+3. **それ以外の相対パス** → アプリケーション基準ディレクトリから解決
 
-2. **Paths starting with `./` or `.\`**: Relative to current working directory
-   ```bash
-   python md-pptx-injector.py ./slides.md ./output.pptx
-   ```
+### 画像ファイルのパス解決順序
 
-3. **Other relative paths**: Relative to app base directory
-   ```bash
-   python md-pptx-injector.py slides.md output.pptx
-   # Looks for: <app_dir>/slides.md, <app_dir>/output.pptx
-   ```
-
-### Image Path Resolution
-
-Images referenced in Markdown are resolved in this order:
-
-1. **Absolute paths**: Used as-is
-2. **Relative paths**: Search in order:
-   - Markdown file directory (highest priority)
-   - App base directory
-   - Current working directory
+1. Markdown ファイルのあるディレクトリ（最優先）
+2. アプリケーション基準ディレクトリ
+3. カレントディレクトリ
 
 ---
 
-## Markdown Syntax
+## Markdown 記法
 
-### Page Breaks (Slide Boundaries)
+### ページ区切り（スライド境界）
 
-Use `---` on a line by itself to create a new slide:
+以下のいずれかがスライドの区切りになります。
+
+**見出し（# / ## / ###）**
 
 ```markdown
-# First Slide
+## スライドA
 
-Content for first slide
+コンテンツA
+
+## スライドB
+
+コンテンツB
+```
+
+**明示的なページ区切りコメント**
+
+```markdown
+<!-- new_page -->
+```
+
+レイアウトを同時に指定することも可能です（後述）。
+
+```markdown
+<!-- new_page="Two Content" -->
+```
+
+> **注意**: ドキュメント先頭の YAML front matter 内の `---` はページ区切りとして扱われません。
 
 ---
 
-# Second Slide
+### テキスト書式
 
-Content for second slide
-```
-
-**Exception**: YAML front matter at the beginning of a page is not treated as a page break.
-
-### Text Formatting
-
-#### Bold
-```markdown
-**Bold text**
-__Bold text__
-
-**Whole line bold**
-```
-
-#### Italic
-```markdown
-*Italic text*
-_Italic text_
-
-*Whole line italic*
-```
-
-#### Bold + Italic
-```markdown
-***Bold and italic text***
-___Bold and italic text___
-
-***Whole line bold and italic***
-```
-
-#### Inline Formatting
-```markdown
-This is **bold**, *italic*, and ***bold+italic*** in one line.
-
-You can mix **multiple** bold and *multiple* italic ***combinations***.
-```
-
-### Headings
-
-#### Slide Layout Headings
-```markdown
-# Title Slide        → Uses "Title Slide" layout
-## Section Header    → Uses "Section Header" layout
-### Content Slide    → Uses "Title and Content" layout
-```
-
-#### In-Slide Headings (with level inheritance)
-```markdown
-#### Level 0 Heading
-Content at level 0
-
-##### Level 1 Heading
-Content at level 1
-- Bullet at level 1
-  - Bullet at level 2
-```
-
-**Important**: Heading levels (#### and #####) affect subsequent content:
-- `####` sets base level to 0
-- `#####` sets base level to 1
-- Regular paragraphs inherit the base level
-- Bullet indentation adds to the base level (max level: 2)
-
-### Bullet Points
+インライン書式は `<b>`, `<i>`, `<u>` のHTMLタグで指定します。ネスト可能です。
 
 ```markdown
-- Level 0 bullet
-  - Level 1 bullet (2 spaces indent)
-    - Level 2 bullet (4 spaces indent)
-
-* Alternative marker
-+ Another alternative
+<b>太字</b>
+<i>斜体</i>
+<u>下線</u>
+<b><i>太字＋斜体</i></b>
+この行の<b>一部だけ</b>太字にすることも<i>できます</i>。
 ```
 
-**Rules**:
-- Indent: 2 spaces per level
-- Maximum: 3 levels (0, 1, 2)
-- Over-indentation is clipped to level 2
-
-### Numbered Lists
-
-```markdown
-1. First item
-2. Second item
-3. Third item
-```
-
-**Note**: Numbers are treated as literal text (auto-numbering is not used).
-
-### Blank Lines
-
-Blank lines in Markdown create empty paragraphs in PowerPoint (vertical spacing).
+> タグの開き忘れや順序の不一致がある場合は書式なしのテキストとして出力されます（`-v` オプションで警告表示）。
 
 ---
 
-## Layouts and Placeholders
+### 見出し
 
-### Layout Selection Priority
+#### スライドレイアウトを決定する見出し（`#` `##` `###`）
 
-1. **Explicit layout comment** (highest priority):
-   ```markdown
-   <!-- layout="Custom Layout Name" -->
-   ```
+| Markdown | 選択されるレイアウト |
+|---|---|
+| `# タイトル` | `Title Slide` |
+| `## セクション` | `Section Header` |
+| `### コンテンツ` | `Title and Content` |
 
-2. **Heading level**:
-   - `#` → `Title Slide`
-   - `##` → `Section Header`
-   - `###` → `Title and Content`
+これらの見出しはスライドのタイトルプレースホルダーに書き込まれます。
 
-3. **YAML front matter** (no heading):
-   - Treated as `Title Slide`
+#### スライド内見出し（`####` `#####`）
 
-### Title Slide
+スライド内のコンテンツ領域に配置され、後続テキストの **ベースレベル** を設定します。
 
-**Pattern A: YAML Front Matter**
 ```markdown
+#### Level 0 の見出し
+ここから level 0 のテキスト
+
+##### Level 1 の見出し
+ここから level 1 のテキスト
+- ここは level 1 の箇条書き
+  - ここは level 2 の箇条書き
+```
+
+| 見出しレベル | ベースレベル |
+|---|---|
+| `####` | 0 |
+| `#####` | 1 |
+
 ---
-title: Presentation Title
-subtitle: Subtitle Text
-author: Author Name
+
+### 箇条書き・番号付きリスト
+
+```markdown
+- レベル0の箇条書き
+  - レベル1（スペース2個インデント）
+    - レベル2（スペース4個インデント）
+
+* マーカーは * でも可
++ マーカーは + でも可
+
+1. 番号付きリスト（番号はそのままテキストとして出力）
+2. 2番目
+```
+
+- インデント: 2スペース = 1レベル（`indent:` で変更可能、後述）
+- 最大レベル: 2（超過分はレベル2にクリップ）
+- 番号付きリストの番号は自動採番ではなく、テキストとして出力されます
+
 ---
+
+### コードブロック
+
+````markdown
 ```
-
-**Pattern B: Markdown Headings** (overrides Pattern A)
-```markdown
-# Presentation Title
-subtitle: Subtitle Text
-author: Author Name
+def hello():
+    print("Hello, World!")
 ```
+````
 
-**Rendering**:
-- Title → Title placeholder
-- Subtitle + Author → Subtitle placeholder (combined, line break between)
+スライド上にグレー背景・Courier New フォントのテキストボックスとして配置されます。
 
-### Custom Placeholders
+---
 
-Target specific placeholders by name:
+### 空行
 
-```markdown
-<!-- placeholder="Content" -->
-This goes into the "Content" placeholder
-(until blank line)
+空行は PowerPoint 内で空の段落（縦の余白）として挿入されます。
 
-<!-- placeholder="SideNote" -->
-This goes into the "SideNote" placeholder
+---
 
-<!-- placeholder="Content" -->
-This is appended to "Content" placeholder
-(with blank line separator)
-```
+## レイアウトとプレースホルダー
 
-**Rules**:
-- Content is captured until a blank line
-- Same placeholder name → append with blank line separator
-- Empty block (immediate blank line) → adds vertical spacing
-- Placeholders not found → ignored (no error)
+### レイアウト選択の優先順位
 
-### Rescue Content
+1. `<!-- layout="..." -->` コメント（最優先）
+2. `<!-- new_page="..." -->` コメント
+3. 見出しレベル（`#` / `##` / `###`）
+4. YAML front matter の有無（見出しなし → `Title Slide`）
 
-Content not assigned to any placeholder is "rescued" into the body placeholder:
+指定されたレイアウトがテンプレートに存在しない場合は自動的に `Title and Content` → テンプレートの最初のレイアウト、の順でフォールバックします（エラーにはなりません）。
+
+---
+
+### レイアウト指定コメント
 
 ```markdown
 <!-- layout="Two Content" -->
+## スライドタイトル
+```
+
+> **注意**: `<!-- layout="..." -->` の直後の行は `#`/`##`/`###` の見出しである必要があります。見出しが続かない場合、このコメントは無視されます。
+
+---
+
+### タイトルスライド
+
+**パターンA: YAML front matter**
+
+```markdown
+---
+title: プレゼンテーションタイトル
+subtitle: サブタイトル
+author: 著者名
+toc: true
+indent: 2
+---
+```
+
+**パターンB: Markdown 見出し**（パターンAより優先）
+
+```markdown
+# プレゼンテーションタイトル
+subtitle: サブタイトル
+author: 著者名
+```
+
+`subtitle` と `author` は改行区切りでサブタイトルプレースホルダーに挿入されます。
+
+**front matter のキー**
+
+| キー | 内容 |
+|---|---|
+| `title` | タイトル |
+| `subtitle` | サブタイトル |
+| `author` | 著者名 |
+| `toc` | `true` にすると末尾に目次スライドを自動生成 |
+| `indent` | 箇条書きのインデント幅（スペース数、デフォルト: `2`） |
+
+---
+
+### カスタムプレースホルダー
+
+テンプレート内のシェイプ名を指定して、コンテンツを直接流し込みます。
+
+```markdown
+<!-- placeholder="LeftBox" -->
+ここの内容は "LeftBox" という名前のシェイプに書き込まれます。
+（空行が来るまでキャプチャ）
+
+<!-- placeholder="RightBox" -->
+ここは "RightBox" に書き込まれます。
 
 <!-- placeholder="LeftBox" -->
-Goes to LeftBox
-
-This unassigned text is rescued into the body placeholder
+同じプレースホルダーに再度書くと、空行区切りで追記されます。
 ```
 
-**Rescue Rules**:
-- Only for non-Title Slide layouts
-- Skipped if rescue content is only blank lines
-- Avoids overwriting explicitly targeted placeholders
+**ルール**
+- 空行までの内容をキャプチャします
+- 同一プレースホルダーへの複数ブロックは、空行区切りで**追記**されます
+- 指定したプレースホルダーが見つからない場合、内容はレスキューコンテンツとして body プレースホルダーに流れます
 
 ---
 
-## Advanced Features
+### レスキューコンテンツ
 
-### Tables
+プレースホルダー指定のないテキストは、自動的に body プレースホルダーに**追記**されます。
 
-**Markdown**:
 ```markdown
-<!-- placeholder="TablePlaceholder" -->
-| Left Heading | Centre Heading | Right Heading |
-|:-------------|:--------------:|--------------:|
-| Alpha        | Bravo          | 1             |
-| Charlie      | Delta          | 2             |
+<!-- layout="Two Content" -->
+## スライドタイトル
+
+<!-- placeholder="LeftBox" -->
+左ボックスの内容
+
+このテキストはプレースホルダー指定なし → body プレースホルダーに追記されます。
 ```
 
-**PowerPoint Result**:
-- Creates table at placeholder position/size
-- Column width: Based on dash count in separator row
-- Alignment: `:---` (left), `:--:` (center), `---:` (right)
-
-**Requirements**:
-- Must be in a placeholder block
-- Unprefixed tables are ignored
-
-### Images
-
-**Markdown**:
-```markdown
-<!-- placeholder="ImagePlaceholder" -->
-![Caption text here](image.jpg)
-```
-
-**PowerPoint Result**:
-- Image fitted to placeholder (contain mode)
-- Aspect ratio preserved
-- Caption → `ImagePlaceholder_caption` if exists
-
-**Image Path Resolution**:
-1. Markdown directory
-2. App base directory
-3. Current working directory
-
-**Requirements**:
-- Must be in a placeholder block
-- Unprefixed images are ignored
+**レスキューの条件**
+- `Title Slide` レイアウト以外のスライドのみ
+- 空行のみの場合はスキップ
+- 明示的に使用されたプレースホルダーは対象外
 
 ---
 
-## Recent Improvements
+## 高度な機能
 
-### Type Hints and Code Quality
-- Migrated to Python 3.9+ modern type hints (`list`, `dict`, `| None`)
-- Added comprehensive type checking support (mypy.ini included)
-- Replaced generic `Exception` with specific exception types
-- Refactored long functions into single-responsibility modules
+### テーブル
 
-### Logging System
-- Replaced custom logging with Python standard `logging` module
-- **Default**: `WARNING` level (errors and warnings only)
-- **Verbose mode** (`-v`): `DEBUG` level (all diagnostic info)
+```markdown
+<!-- placeholder="TableArea" -->
+| 左揃え | 中央揃え | 右揃え |
+|:-------|:--------:|-------:|
+| Alpha  | Bravo    | 1      |
+| Charlie| Delta    | 2      |
+```
+
+- プレースホルダーの位置・サイズでテーブルを生成します
+- 列幅はセパレータ行のダッシュ数の比率で決まります
+- アラインメント: `:---` 左揃え、`:--:` 中央揃え、`---:` 右揃え
+- プレースホルダー指定なしのテーブルは無視されます
+
+---
+
+### 画像
+
+```markdown
+<!-- placeholder="ImageArea" -->
+![キャプションテキスト](image.jpg)
+```
+
+- プレースホルダーの枠内にコンテインフィット（アスペクト比保持）で挿入
+- `![キャプション]` に文字がある場合、`ImageArea_caption` という名前のシェイプがあればそこにキャプションが書き込まれます
+- プレースホルダー指定なしの画像は無視されます
+
+---
+
+### 目次スライド
+
+YAML front matter に `toc: true` を記述すると、最終スライドとして目次スライドを自動生成します。
+
+```markdown
+---
+title: プレゼンテーション
+toc: true
+---
+```
+
+- `##`（Section Header）と `###`（Title and Content）の見出しが目次エントリになります
+- 各エントリはスライドへのハイパーリンク付きで出力されます
+
+---
+
+## トラブルシューティング
+
+### ログレベル
+
+| レベル | 通常時 | `-v` 時 | 内容 |
+|---|---|---|---|
+| `DEBUG` | ❌ | ✅ | シェイプ情報・プレースホルダー解決の詳細 |
+| `INFO` | ❌ | ✅ | 進捗メッセージ |
+| `WARNING` | ✅ | ✅ | 非致命的な問題（レイアウト未検出・Pillowなしなど） |
+| `ERROR` | ✅ | ✅ | 致命的エラー（ファイル未検出・保存失敗など） |
+
+---
+
+### よくある問題と対処
+
+**テンプレートが見つからない**
+
+```
+File not found.
+```
+
+`--template` で正しいパスを指定するか、スクリプトと同じディレクトリに `template.pptx` を置いてください。
+
+**レイアウトが見つからない**
+
+```
+WARNING: Slide 2: layout 'MyLayout' not found. Falling back to auto.
+```
+
+PowerPoint テンプレートのスライドレイアウト名と Markdown の指定が完全一致（大文字小文字を含む）しているか確認してください。
+
+**プレースホルダーが見つからない**
+
+```
+[page 2] placeholder "Content" NOT FOUND -> rescuing content
+```
+
+PowerPoint の「選択ウィンドウ」でシェイプ名を確認し、Markdown の指定と一致させてください。
+
+**画像が挿入されない**
+
+```
+WARNING: Image not found: logo.png
+```
+
+Markdown ファイルと同じディレクトリに画像を置くか、絶対パスで指定してください。`-v` オプションで検索パスの詳細が表示されます。
+
+**書式タグが効かない**
+
+```
+WARNING: Slide 3: Unclosed tag in 'テキスト<b>'. Skipping formatting.
+```
+
+`<b>`, `<i>`, `<u>` の開きタグと閉じタグが対応しているか確認してください。
+
+---
+
+### デバッグ手順
 
 ```bash
-# Normal operation (quiet)
-python md-pptx-injector.py input.md output.pptx
-
-# Debug mode (verbose)
+# 1. 詳細ログで実行
 python md-pptx-injector.py input.md output.pptx -v
+
+# 2. スライドのシェイプ一覧を確認
+# [shapes on slide]
+#   - #0: name='Title 1', is_placeholder=True, has_text_frame=True
+#   - #1: name='Content 2', is_placeholder=True, has_text_frame=True
+
+# 3. プレースホルダー解決を確認
+# [page 2] placeholder "Content" found: actual_name='Content 2'
+
+# 4. 画像パスを確認
+# [image] inserted '/full/path/to/image.jpg' alt='キャプション'
 ```
-
-### Error Messages
-Enhanced error reporting with diagnostic information:
-```
-ERROR: Source markdown file not found: /path/to/file.md
-  Current working directory: /current/dir
-  App directory: /app/dir
-  Absolute path: /path/to/file.md
-```
-
-### Image Path Resolution
-Improved multi-path fallback with detailed logging:
-```
-Image not found: logo.png
-  Searched paths:
-    - /markdown/dir/logo.png
-    - /app/dir/logo.png
-    - /cwd/logo.png
-```
-
-### Table Parsing
-Enhanced validation with better error messages:
-- Column count verification
-- Separator row validation
-- Detailed debug logging for malformed tables
-
-### Bold/Italic Support
-Full inline and whole-line formatting:
-- `**bold**`, `*italic*`, `***bold+italic***`
-- `__bold__`, `_italic_`, `___bold+italic___`
-- Mixed formatting in single line
-- Negative lookahead/lookbehind to avoid pattern conflicts
-
----
-
-## Troubleshooting
-
-### Logging Levels
-
-| Level | Default | Verbose | Usage |
-|-------|---------|---------|-------|
-| `DEBUG` | ❌ | ✅ | Detailed trace (shape info, placeholder resolution) |
-| `INFO` | ❌ | ✅ | Progress messages |
-| `WARNING` | ✅ | ✅ | Non-critical issues (missing placeholders, Pillow not installed) |
-| `ERROR` | ✅ | ✅ | Critical errors (file not found, save failed) |
-
-### Common Issues
-
-**1. Template not found**
-```
-ERROR: Template pptx file not found: template.pptx
-```
-**Solution**: Provide template with `--template` or place `template.pptx` in app directory
-
-**2. Layout not found**
-```
-ValueError: Layout not found in template: "CustomLayout"
-```
-**Solution**: Check layout name matches exactly (case-sensitive) in PowerPoint template
-
-**3. Image not loaded**
-```
-WARNING: Image not found: image.jpg
-```
-**Solution**: Check image path relative to Markdown file or use absolute path
-
-**4. Placeholder not found**
-```
-[page 2] placeholder "Content" NOT FOUND
-```
-**Solution**: Verify placeholder name in PowerPoint selection pane matches exactly
-
-**5. Bold+Italic not working**
-```markdown
-# Problem
-***text***  → Only bold applied
-
-# Solution (after fix)
-***text***  → Bold+italic applied correctly
-```
-**Solution**: Use latest version with fixed regex patterns
-
-### Debug Workflow
-
-1. **Run with verbose flag**:
-   ```bash
-   python md-pptx-injector.py input.md output.pptx -v
-   ```
-
-2. **Check slide shapes**:
-   ```
-   [page 1] created slide: slide_layout.name='Title Slide'
-   [shapes on slide]
-     - #0: name='Title 1', is_placeholder=True, has_text_frame=True
-     - #1: name='Subtitle 2', is_placeholder=True, has_text_frame=True
-   ```
-
-3. **Verify placeholder resolution**:
-   ```
-   [page 2] placeholder "Content" found: actual_name='Content Placeholder 2'
-   ```
-
-4. **Check image paths**:
-   ```
-   Image found: /full/path/to/image.jpg
-   ```
-

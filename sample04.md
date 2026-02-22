@@ -1,32 +1,30 @@
-# テストプレゼンテーション
+# Title
+subtitle: Subtitle
 
 ---
 
-### Bold と Italic のテスト
+<!-- layout="sample01" -->
+### Image Test
 
-これは通常のテキストです。
+<!-- placeholder="holder01" -->
+holder01
 
-**これは太字（bold）です。**
+<!-- placeholder="image01" -->
+![caption01](lena.jpg)
 
-*これはイタリック（italic）です。*
+<!-- placeholder="holder02" -->
+* holder2-1
+* holder2-2
+* holder2-3
 
-***これは太字+イタリック（bold+italic）です。***
+<!-- placeholder="image02" -->
+![caption02](lena.jpg)
 
----
+<!-- placeholder="holder03" -->
+<b>blank line of holder3<b>
 
-### インライン形式のテスト
 
-通常のテキストに**太字**や*イタリック*、そして***太字+イタリック***を混在させることができます。
+How does it look?
 
-- **太字の**箇条書き
-- *イタリックの*箇条書き
-- ***太字+イタリックの***箇条書き
-- 通常と**太字**と*イタリック*が混在した箇条書き
-
----
-
-### 複雑な組み合わせ
-
-これは**重要な部分**であり、*強調したい部分*もあります。さらに***最も重要な部分***もあります。
-
-普通の文章の中に**複数の**太字や*複数の*イタリック、***複数の***太字+イタリックが含まれることもあります。
+<!-- placeholder="image03" -->
+![caption03](lena.jpg)

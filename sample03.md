@@ -1,32 +1,27 @@
 ---
-title: タイトル
-subtitle: サブタイトル
-auther: name
+title: Title
+subtitle: Subtitle
+auther: Name
 ---
 
----
+## Section 1
 
-## 1章
-
-内容
-
----
+hoge
 
 <!-- layout="sample02" -->
-### ページ1-1
+### Page1-1
 
 <!-- placeholder="holder01" -->
-#### ■ 内容1
-* リスト1
-* リスト2
-  * リスト2-1
-    * リスト2-2
+#### ■ Content1
+* List1
+* List2
+  * List2-1
+    * List2-1-1
 
 <!-- placeholder="holder02" -->
-#### ■ 内容2
-ほげ
-##### □ 内容2-2
-ほげほげ
+#### ■ Content2
+hoge
+##### □ COntent2-1
+hogehoge
 
----
 
