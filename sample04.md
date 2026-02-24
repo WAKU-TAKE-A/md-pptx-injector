@@ -28,3 +28,15 @@ How does it look?
 
 <!-- placeholder="image03" -->
 ![caption03](lena.jpg)
+
+<!-- layout="sample03" -->
+### Table Test
+
+<!-- placeholder="holder01" -->
+Table description.
+
+<!-- placeholder="table01" -->
+| 左揃え | 中央揃え | 右揃え |
+|:--|:----:|------:|
+| Alpha  | Bravo    | 1      |
+| Charlie| Delta    | 2      |

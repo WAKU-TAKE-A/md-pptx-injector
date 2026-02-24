@@ -24,7 +24,7 @@ try:
 except ImportError:
     PILImage = None
 
-__version__ = "0.9.0.0"
+__version__ = "0.9.1.0"
 
 # -------------------------
 # Constants
@@ -71,12 +71,13 @@ RE_LAYOUT = re.compile(r'<!--\s*layout\s*=\s*"([^"]+)"\s*--\s*>')
 RE_NEW_PAGE = re.compile(r'<!--\s*new_page(?:\s*=\s*"([^"]+)")?\s*--\s*>')
 RE_PLACEHOLDER = re.compile(r'<!--\s*placeholder\s*=\s*"([^"]+)"\s*--\s*>')
 RE_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
-RE_KV = re.compile(r"^\s*(title|subtitle|author|toc|indent)\s*:\s*(.*)\s*$", re.IGNORECASE)
+RE_KV = re.compile(r"^\s*(title|subtitle|author|toc|indent|font_size_l[0-4])\s*:\s*(.*)\s*$", re.IGNORECASE)
 RE_BULLET = re.compile(r"^(\s*)([-*+])\s+(.*)$")
 RE_NUMBERED = re.compile(r"^(\s*)(\d+)\.\s+(.*)$")
 RE_IMAGE = re.compile(r"!\[(.*?)\]\((.*?)\)")
 RE_HTML_TAGS = re.compile(r'<(/?)([biu])>', re.IGNORECASE)
 RE_CODE_FENCE = re.compile(r"^```")
+RE_FONT_SIZE_ATTRS = re.compile(r'font_size_l([0-4])\s*=\s*(\d+(?:\.\d+)?)')
 
 # -------------------------
 # Data classes
@@ -130,6 +131,29 @@ def clear_bullet_override(paragraph) -> None:
             p_pr.remove(el)
     except Exception as e:
         logger.debug(f"clear_bullet_override failed: {e}")
+
+def send_to_back(shape) -> None:
+    """Send shape to the back of the z-order.
+    spTree structure requires <p:nvGrpSpPr> and <p:grpSpPr> as the first two
+    children — inserting at index 0 would corrupt the XML.
+    Instead, find the first actual shape child and insert before it.
+    """
+    try:
+        sp = shape._element
+        parent = sp.getparent()
+        parent.remove(sp)
+        # Find insertion point: after required metadata elements
+        REQUIRED_TAGS = {
+            "nvGrpSpPr", "grpSpPr",  # spTree required children
+        }
+        insert_idx = 0
+        for i, child in enumerate(parent):
+            local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if local in REQUIRED_TAGS:
+                insert_idx = i + 1
+        parent.insert(insert_idx, sp)
+    except Exception as e:
+        logger.debug(f"send_to_back failed: {e}")
 
 def bring_to_front(shape) -> None:
     try:
@@ -263,6 +287,22 @@ def dump_slide_shapes(slide, page_no: int) -> None:
 # -------------------------
 # Markdown parsing
 # -------------------------
+def parse_font_sizes_from_comment(text: str) -> dict[int, float]:
+    """Extract font_size_lN=X attributes from an HTML comment string.
+    Returns {level: pt} for each valid font_size_lN found.
+    Example: '<!-- layout="hoge" font_size_l1=16 font_size_l2=14 -->'
+             -> {1: 16.0, 2: 14.0}
+    """
+    result: dict[int, float] = {}
+    for m in RE_FONT_SIZE_ATTRS.finditer(text):
+        level = int(m.group(1))
+        try:
+            pt = float(m.group(2))
+            if pt > 0:
+                result[level] = pt
+        except ValueError:
+            pass
+    return result
 def parse_with_stack(text: str, verbose: bool, page_no: int) -> list[TextRun]:
     """Stack-based inline HTML tag parser (<b>, <i>, <u>).
     Falls back to a single plain TextRun on mismatched or unclosed tags.
@@ -481,6 +521,16 @@ def parse_simple_yaml(yaml_lines: list[str]) -> dict[str, Any]:
                     data[key] = int(val)
                 except ValueError:
                     logger.warning(f"Invalid indent value '{val}', using default.")
+            elif key.startswith("font_size_l"):
+                # font_size_l0 .. font_size_l4 -> stored as float pt values
+                level = int(key[-1])  # last char is 0-4
+                try:
+                    pt = float(val)
+                    if pt <= 0:
+                        raise ValueError("must be positive")
+                    data[key] = pt
+                except ValueError:
+                    logger.warning(f"Invalid {key} value '{val}', ignoring.")
             else:
                 data[key] = val
     return data
@@ -540,30 +590,26 @@ def _write_run(paragraph, run_spec: TextRun) -> None:
         logger.debug(f"Font style apply failed: {e}")
 
 def write_paragraphs_to_shape(
-    shape, paras: list[ParaSpec], append: bool, blank_before_append: bool
+    shape, paras: list[ParaSpec], append: bool, blank_before_append: bool,
+    font_sizes: dict[int, float] | None = None,
 ) -> None:
     """Write paragraphs to a text shape.
 
-    FIX #3: all text is written exclusively via _write_run() (run-level font
-    control).  p.text = ... is never used here, which avoids accidentally
-    overriding template paragraph styles (font size, color, etc.).
-
-    FIX #5: when append=True, tf.clear() is NOT called so existing content
-    (including template placeholder text) is preserved and new content is
-    appended after it.
+    font_sizes: optional dict {level: pt}. When provided, overrides the
+    master font size for that level. Only applies to body/bullet paragraphs
+    (i.e. all paragraphs written here — title uses set_text_lines instead).
+    Levels with no entry inherit from the master template (no override).
     """
     if not shape or not getattr(shape, "has_text_frame", False):
         return
     tf = shape.text_frame
 
-    # FIX #5: only clear the frame when starting fresh (not appending)
     if not append:
         tf.clear()
 
     if not paras:
         return
 
-    # Insert a blank separator paragraph before appended content
     if append and blank_before_append:
         sep = tf.add_paragraph()
         sep.add_run().text = ""
@@ -571,10 +617,8 @@ def write_paragraphs_to_shape(
         sep.level = 0
 
     for idx, ps in enumerate(paras):
-        # Re-use the first (already-cleared) paragraph only when not appending
         if not append and idx == 0:
             p = tf.paragraphs[0]
-            # Remove any residual <a:r> run elements left after tf.clear()
             for child in list(p._p):
                 local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
                 if local == "r":
@@ -582,12 +626,10 @@ def write_paragraphs_to_shape(
         else:
             p = tf.add_paragraph()
 
-        # FIX #3: always write via runs (never p.text = ...)
         if ps.runs:
             for run_spec in ps.runs:
                 _write_run(p, run_spec)
         else:
-            # Blank / empty paragraph — add an empty run to keep the element valid
             p.add_run().text = ""
 
         if ps.bullet:
@@ -595,6 +637,15 @@ def write_paragraphs_to_shape(
         else:
             set_bullet_none(p)
         p.level = ps.level
+
+        # Apply font size override for this level if specified
+        if font_sizes:
+            pt = font_sizes.get(ps.level)
+            if pt is not None:
+                try:
+                    p.font.size = Pt(pt)
+                except Exception as e:
+                    logger.debug(f"font size apply failed (level={ps.level}): {e}")
 
 # -------------------------
 # Slide building
@@ -625,7 +676,7 @@ def add_code_block_shape(slide, code_text: str) -> None:
     p.font.color.rgb = RGBColor(50, 50, 50)
     if p.runs:
         set_ea_font(p.runs[0], "MS Gothic")
-    bring_to_front(textbox)
+    send_to_back(textbox)
 
 def insert_table_at_shape(slide, shp, lines: list[str]) -> None:
     parsed = parse_markdown_table(lines)
@@ -692,12 +743,14 @@ def insert_image_at_shape(
 
 def resolve_layout_strategy(
     page_lines: list[str], front: dict, prs: Presentation, page_no: int
-) -> str:
-    """Determine layout name for a page.
-    FIX #1: uses find_layout_by_name (returns None) rather than raising;
-    falls back to auto-detection when a named layout cannot be found.
+) -> tuple[str, dict[int, float]]:
+    """Determine layout name and layout-level font_sizes for a page.
+    Returns (layout_name, layout_font_sizes).
+    layout_font_sizes: parsed from font_size_lN attributes in <!-- layout="..." --> tag.
     """
     forced_layout = None
+    layout_font_sizes: dict[int, float] = {}
+
     for line in page_lines:
         m = RE_NEW_PAGE.match(line.strip())
         if m and m.group(1):
@@ -716,14 +769,16 @@ def resolve_layout_strategy(
             h_m = RE_HEADING.match(next_line)
             if h_m and len(h_m.group(1)) <= HEADING_LEVEL_PAGE_BREAK_THRESHOLD:
                 forced_layout = potential_layout
+                layout_font_sizes = parse_font_sizes_from_comment(line)
+                if layout_font_sizes:
+                    logger.debug(f"[page {page_no}] layout font_sizes: {layout_font_sizes}")
             else:
                 logger.info(f"Slide {page_no}: layout tag ignored (no heading follows).")
             break
 
     if forced_layout:
-        # FIX #1: graceful fallback — warn and continue with auto-detection
         if find_layout_by_name(prs, forced_layout) is not None:
-            return forced_layout
+            return forced_layout, layout_font_sizes
         logger.warning(
             f"Slide {page_no}: layout '{forced_layout}' not found. Falling back to auto."
         )
@@ -736,18 +791,31 @@ def resolve_layout_strategy(
             break
 
     if heading_level == 1 or bool(front):
-        return "Title Slide"
+        return "Title Slide", layout_font_sizes
     if heading_level == 2:
-        return "Section Header"
-    return "Title and Content"
+        return "Section Header", layout_font_sizes
+    return "Title and Content", layout_font_sizes
 
 def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
     front, body = extract_front_matter(page_lines)
     if page_no == 1:
         state["use_toc"] = front.get("toc", False)
         state["indent"] = int(front.get("indent", DEFAULT_INDENT_SPACES))
+        # Collect font_size_l0 .. font_size_l4 from front matter
+        font_sizes: dict[int, float] = {}
+        for lv in range(5):
+            key = f"font_size_l{lv}"
+            if key in front:
+                font_sizes[lv] = front[key]
+                logger.debug(f"font_size_l{lv} = {front[key]} pt")
+        state["font_sizes"] = font_sizes
 
-    layout_name = resolve_layout_strategy(body, front, prs, page_no)
+    layout_name, layout_font_sizes = resolve_layout_strategy(body, front, prs, page_no)
+
+    # Merge font_sizes: YAML(base) <- layout override
+    page_font_sizes: dict[int, float] = {**state["font_sizes"], **layout_font_sizes}
+    if layout_font_sizes:
+        logger.debug(f"[page {page_no}] effective font_sizes after layout merge: {page_font_sizes}")
 
     # FIX #1: multi-level fallback — never crash due to missing layout
     layout = find_layout_by_name(prs, layout_name)
@@ -791,11 +859,16 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
 
     logger.debug(f"[page {page_no}] heading=({heading_level}) {heading_text!r}")
 
-    blocks, rescue, idx = {}, [], 0
+    # blocks: {name: [(captured_lines, ph_font_sizes), ...]}
+    blocks: dict[str, list[tuple[list[str], dict[int, float]]]] = {}
+    rescue, idx = [], 0
     while idx < len(body_clean):
         m = RE_PLACEHOLDER.search(body_clean[idx])
         if m:
             name = m.group(1).strip()
+            ph_font_sizes = parse_font_sizes_from_comment(body_clean[idx])
+            if ph_font_sizes:
+                logger.debug(f'  [page {page_no}] placeholder "{name}" font_sizes: {ph_font_sizes}')
             idx += 1
             captured = []
             if idx < len(body_clean):
@@ -813,7 +886,7 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
                             break
                         captured.append(body_clean[idx])
                         idx += 1
-            blocks.setdefault(name, []).append(captured)
+            blocks.setdefault(name, []).append((captured, ph_font_sizes))
             continue
         rescue.append(body_clean[idx])
         idx += 1
@@ -847,8 +920,8 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
             shp = find_shape_by_name(slide, name)
             if not shp:
                 logger.debug(f'[page {page_no}] placeholder "{name}" NOT FOUND -> rescuing content')
-                for b in blks:
-                    rescue.extend(b)
+                for blk, _ in blks:
+                    rescue.extend(blk)
                 continue
             explicit_used.add(id(shp))
             logger.debug(
@@ -857,9 +930,11 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
                 f'is_placeholder={getattr(shp, "is_placeholder", False)}, '
                 f'has_text_frame={getattr(shp, "has_text_frame", False)}'
             )
-            for bi, blk in enumerate(blks):
+            for bi, (blk, ph_font_sizes) in enumerate(blks):
                 if not blk:
                     continue
+                # Merge: YAML <- layout <- placeholder
+                effective_font_sizes = {**page_font_sizes, **ph_font_sizes}
                 if RE_IMAGE.search(blk[0].strip()):
                     logger.debug(f'  [image] block #{bi+1} -> "{name}"')
                     insert_image_at_shape(slide, shp, blk, md_dir, app_dir,
@@ -869,12 +944,13 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
                     insert_table_at_shape(slide, shp, blk)
                 elif getattr(shp, "has_text_frame", False):
                     paras, codes = build_paragraphs_from_lines(blk, indent, verbose, page_no)
-                    logger.debug(f'  [text] block #{bi+1} -> "{name}" paras={len(paras)}')
+                    logger.debug(f'  [text] block #{bi+1} -> "{name}" paras={len(paras)} font_sizes={effective_font_sizes or None}')
                     for c in codes:
                         add_code_block_shape(slide, c)
                     key = (id(slide), name)
                     already = state["text_written"].get(key, False)
-                    write_paragraphs_to_shape(shp, paras, append=already, blank_before_append=already)
+                    write_paragraphs_to_shape(shp, paras, append=already, blank_before_append=already,
+                                              font_sizes=effective_font_sizes)
                     state["text_written"][key] = True
 
         while rescue and not rescue[0].strip():
@@ -892,7 +968,8 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
                 key = (id(slide), "__BODY__")
                 # FIX #5: rescue always appends — never overwrites existing shape content
                 already = state["text_written"].get(key, False)
-                write_paragraphs_to_shape(body_shp, paras, append=True, blank_before_append=already)
+                write_paragraphs_to_shape(body_shp, paras, append=already, blank_before_append=already,
+                                          font_sizes=page_font_sizes)
                 state["text_written"][key] = True
             else:
                 logger.debug(f"[page {page_no}] rescue skipped (no body shape found)")
@@ -944,6 +1021,7 @@ def main() -> int:
         "toc": [],
         "use_toc": False,
         "indent": DEFAULT_INDENT_SPACES,
+        "font_sizes": {},  # {level(int): pt(float)} — only specified levels
     }
     pages = split_pages(src.read_text(encoding="utf-8"))
     logger.debug(f"Processing {len(pages)} page(s)")
