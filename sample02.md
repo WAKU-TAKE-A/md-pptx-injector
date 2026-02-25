@@ -20,9 +20,3 @@ You can also mix <b><i>bold+italic</i></b>, and <b><u>bold+underline</u></b> in 
 - <u>Underline</u> bullet
 - <b><i>Bold+Italic</i></b> bullet
 - Mix of normal, <b>bold</b>, <i>italic</i>, and <u>underline</u> bullet
-
-### Code block
-```
-resutl = 1 + 2
-print(result)
-```

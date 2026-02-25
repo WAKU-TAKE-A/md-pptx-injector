@@ -1,8 +1,6 @@
 # Title
 subtitle: Subtitle
 
----
-
 <!-- layout="sample01" -->
 ### Image Test
 
@@ -40,3 +38,9 @@ Table description.
 |:--|:----:|------:|
 | Alpha  | Bravo    | 1      |
 | Charlie| Delta    | 2      |
+
+### Code block
+```
+resutl = 1 + 2
+print(result)
+```

@@ -1,5 +1,6 @@
 ---
-toc: false
+toc: true
+toc_title: Contents
 ---
 
 # Title

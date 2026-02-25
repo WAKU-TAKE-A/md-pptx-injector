@@ -24,13 +24,13 @@ try:
 except ImportError:
     PILImage = None
 
-__version__ = "0.9.1.0"
+__version__ = "0.9.4.0"
 
 # -------------------------
 # Constants
 # -------------------------
 DEFAULT_INDENT_SPACES = 2
-MAX_BULLET_LEVEL = 2
+MAX_BULLET_LEVEL = 4
 HEADING_LEVEL_PAGE_BREAK_THRESHOLD = 3
 HEADING_LEVEL_BASE_OFFSET = 4
 CODE_BLOCK_LEFT = Inches(0.5)
@@ -71,7 +71,7 @@ RE_LAYOUT = re.compile(r'<!--\s*layout\s*=\s*"([^"]+)"\s*--\s*>')
 RE_NEW_PAGE = re.compile(r'<!--\s*new_page(?:\s*=\s*"([^"]+)")?\s*--\s*>')
 RE_PLACEHOLDER = re.compile(r'<!--\s*placeholder\s*=\s*"([^"]+)"\s*--\s*>')
 RE_HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
-RE_KV = re.compile(r"^\s*(title|subtitle|author|toc|indent|font_size_l[0-4])\s*:\s*(.*)\s*$", re.IGNORECASE)
+RE_KV = re.compile(r"^\s*(title|subtitle|author|toc|toc_title|indent|font_size_l[0-4])\s*:\s*(.*)\s*$", re.IGNORECASE)
 RE_BULLET = re.compile(r"^(\s*)([-*+])\s+(.*)$")
 RE_NUMBERED = re.compile(r"^(\s*)(\d+)\.\s+(.*)$")
 RE_IMAGE = re.compile(r"!\[(.*?)\]\((.*?)\)")
@@ -189,6 +189,7 @@ def add_slide_hyperlink(run, source_slide, target_slide) -> None:
             rPr.remove(el)
         hlink = OxmlElement("a:hlinkClick")
         hlink.set(qn("r:id"), rId)
+        hlink.set("action", "ppaction://hlinksldjump")
         rPr.append(hlink)
     except Exception as e:
         logger.debug(f"add_slide_hyperlink failed: {e}")
@@ -426,22 +427,28 @@ def build_paragraphs_from_lines(
 def split_pages(md_text: str) -> list[list[str]]:
     """
     Split markdown into pages:
-    - YAML front matter at document start: kept as part of first page
+    - YAML front matter at document start: kept as part of first page.
+      A level-1 heading (#) immediately following YAML is also kept on the
+      same page (title slide pattern: YAML + # Title).
     - <!-- new_page --> / <!-- new_page="layout" -->: unconditional page break
     - <!-- layout="name" --> immediately followed by #/##/###: triggers page break
-    - #/##/### heading lines: trigger page break
+    - ##/### heading lines: trigger page break
+    - # heading: triggers page break ONLY when YAML front matter is not present
+      on the current page
     """
     lines = md_text.splitlines()
     pages: list[list[str]] = []
     cur: list[str] = []
     in_yaml = False
+    yaml_in_cur = False  # True while current page contains YAML front matter
     i = 0
 
     def flush(new_cur: list[str] | None = None) -> None:
-        nonlocal cur
+        nonlocal cur, yaml_in_cur
         if any(l.strip() for l in cur):
             pages.append(cur)
         cur = new_cur if new_cur is not None else []
+        yaml_in_cur = False
 
     while i < len(lines):
         line = lines[i]
@@ -449,6 +456,7 @@ def split_pages(md_text: str) -> list[list[str]]:
 
         if not any(l.strip() for l in cur) and stripped == "---" and not in_yaml:
             in_yaml = True
+            yaml_in_cur = True
             cur.append(line)
             i += 1
             continue
@@ -483,10 +491,17 @@ def split_pages(md_text: str) -> list[list[str]]:
             continue
 
         h_m = RE_HEADING.match(stripped)
-        if h_m and len(h_m.group(1)) <= HEADING_LEVEL_PAGE_BREAK_THRESHOLD:
-            flush([line])
-            i += 1
-            continue
+        if h_m:
+            level = len(h_m.group(1))
+            if level <= HEADING_LEVEL_PAGE_BREAK_THRESHOLD:
+                # Level-1 heading (#): keep on same page when YAML is present
+                if level == 1 and yaml_in_cur:
+                    cur.append(line)
+                    i += 1
+                    continue
+                flush([line])
+                i += 1
+                continue
 
         cur.append(line)
         i += 1
@@ -562,15 +577,32 @@ def parse_title_page_info(front: dict, lines: list[str]) -> dict:
     return info
 
 def parse_markdown_table(lines: list[str]):
+    """Parse a Markdown table.
+    Returns (headers, rows, col_widths, col_aligns) or None.
+    col_widths: list of dash counts from the separator row (proportional widths)
+    col_aligns: list of 'left'/'center'/'right' per column
+    """
     tbl = [ln.strip() for ln in lines if ln.strip()]
     if len(tbl) < 2 or not (tbl[0].startswith("|") and tbl[1].startswith("|")):
         return None
     h = [c.strip() for c in tbl[0].strip("|").split("|")]
+    sep_cells = [c.strip() for c in tbl[1].strip("|").split("|")]
+    col_widths = []
+    col_aligns = []
+    for cell in sep_cells:
+        dashes = cell.replace(":", "")
+        col_widths.append(max(len(dashes), 1))
+        if cell.startswith(":") and cell.endswith(":"):
+            col_aligns.append("center")
+        elif cell.endswith(":"):
+            col_aligns.append("right")
+        else:
+            col_aligns.append("left")
     r = [
         [c.strip() for c in ln.strip("|").split("|")]
         for ln in tbl[2:] if ln.strip().startswith("|")
     ]
-    return h, r
+    return h, r, col_widths, col_aligns
 
 def _write_run(paragraph, run_spec: TextRun) -> None:
     """FIX #3: write a single TextRun into a paragraph at the run level.
@@ -679,19 +711,49 @@ def add_code_block_shape(slide, code_text: str) -> None:
     send_to_back(textbox)
 
 def insert_table_at_shape(slide, shp, lines: list[str]) -> None:
+    """Insert a Markdown table into the given shape.
+    Column widths are proportional to the dash counts in the separator row.
+    Column alignment (left/center/right) is applied to each cell paragraph.
+    """
+    from pptx.enum.text import PP_ALIGN
     parsed = parse_markdown_table(lines)
     if not parsed:
         return
-    h, r = parsed
-    ts = slide.shapes.add_table(
-        len(r) + 1, len(h), shp.left, shp.top, shp.width, shp.height
-    )
+    h, r, col_widths, col_aligns = parsed
+    n_cols = len(h)
+    n_rows = len(r) + 1
+    ts = slide.shapes.add_table(n_rows, n_cols, shp.left, shp.top, shp.width, shp.height)
+    tbl = ts.table
+
+    # Apply proportional column widths (last column absorbs rounding remainder)
+    total_w = sum(col_widths)
+    assigned = 0
+    for ci, w in enumerate(col_widths[:n_cols]):
+        if ci == n_cols - 1:
+            tbl.columns[ci].width = shp.width - assigned
+        else:
+            cw = int(shp.width * w / total_w)
+            tbl.columns[ci].width = cw
+            assigned += cw
+
+    # Alignment map
+    ALIGN_MAP = {
+        "left":   PP_ALIGN.LEFT,
+        "center": PP_ALIGN.CENTER,
+        "right":  PP_ALIGN.RIGHT,
+    }
+
+    def _set_cell(cell, text: str, align: str) -> None:
+        cell.text = text
+        for para in cell.text_frame.paragraphs:
+            para.alignment = ALIGN_MAP.get(align, PP_ALIGN.LEFT)
+
     for ci, v in enumerate(h):
-        ts.table.cell(0, ci).text = v
+        _set_cell(tbl.cell(0, ci), v, col_aligns[ci] if ci < len(col_aligns) else "left")
     for ri, row in enumerate(r, 1):
         for ci, v in enumerate(row):
-            if ci < len(h):
-                ts.table.cell(ri, ci).text = v
+            if ci < n_cols:
+                _set_cell(tbl.cell(ri, ci), v, col_aligns[ci] if ci < len(col_aligns) else "left")
     bring_to_front(ts)
 
 def insert_image_at_shape(
@@ -800,6 +862,7 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
     front, body = extract_front_matter(page_lines)
     if page_no == 1:
         state["use_toc"] = front.get("toc", False)
+        state["toc_title"] = front.get("toc_title", "Table of Contents")
         state["indent"] = int(front.get("indent", DEFAULT_INDENT_SPACES))
         # Collect font_size_l0 .. font_size_l4 from front matter
         font_sizes: dict[int, float] = {}
@@ -974,7 +1037,7 @@ def build_slide_from_page(prs, page_lines, md_dir, app_dir, state, page_no):
             else:
                 logger.debug(f"[page {page_no}] rescue skipped (no body shape found)")
 
-def generate_toc_slide(prs, toc_entries: list[TOCEntry]) -> None:
+def generate_toc_slide(prs, toc_entries: list[TOCEntry], toc_title: str = "Table of Contents") -> None:
     layout = find_layout_by_name(prs, "Table of Contents")
     if layout is None:
         layout = find_layout_by_name(prs, "Title and Content")
@@ -983,7 +1046,7 @@ def generate_toc_slide(prs, toc_entries: list[TOCEntry]) -> None:
     slide = prs.slides.add_slide(layout)
     title_shp = find_title_shape(slide)
     if title_shp:
-        set_text_lines(title_shp, ["Table of Contents"])
+        set_text_lines(title_shp, [toc_title])
     body_shp = find_body_text_shape_excluding(slide, {id(title_shp)})
     if not body_shp:
         return
@@ -991,10 +1054,15 @@ def generate_toc_slide(prs, toc_entries: list[TOCEntry]) -> None:
     tf.clear()
     for i, entry in enumerate(toc_entries):
         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-        p.text = entry.text
+        for child in list(p._p):
+            local = child.tag.split("}")[-1] if "}" in child.tag else child.tag
+            if local == "r":
+                p._p.remove(child)
+        set_bullet_none(p)
         p.level = entry.level - 2
-        for run in p.runs:
-            add_slide_hyperlink(run, slide, entry.target_slide)
+        run = p.add_run()
+        run.text = entry.text
+        add_slide_hyperlink(run, slide, entry.target_slide)
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Markdown to PPTX Injector")
@@ -1020,6 +1088,7 @@ def main() -> int:
         "verbose": args.verbose,
         "toc": [],
         "use_toc": False,
+        "toc_title": "Table of Contents",
         "indent": DEFAULT_INDENT_SPACES,
         "font_sizes": {},  # {level(int): pt(float)} — only specified levels
     }
@@ -1030,7 +1099,7 @@ def main() -> int:
             build_slide_from_page(prs, pg, src.parent, ad, state, i)
 
     if state["use_toc"] and state["toc"]:
-        generate_toc_slide(prs, state["toc"])
+        generate_toc_slide(prs, state["toc"], toc_title=state["toc_title"])
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(dst))
